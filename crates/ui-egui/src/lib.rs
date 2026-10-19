@@ -279,6 +279,7 @@ pub struct UiState {
 }
 
 impl Default for UiState {
+    /// The layout a first launch gets, and what any field missing from `ui.json` falls back to.
     fn default() -> Self {
         UiState {
             brightness: theme::Brightness::Light,
@@ -839,6 +840,8 @@ impl SlideApp {
         params.get("on").and_then(Value::as_bool).unwrap_or(!cur)
     }
 
+    /// Run UI command `id` with params `p`: views, panes, the show and presenter view, dialogs and
+    /// the other commands that act on the app rather than the presentation.
     fn run_ui(&mut self, id: &str, p: &Value) -> Result<Value, String> {
         match id {
             "view.normal" => self.ui.view = ViewMode::Normal,
@@ -1083,6 +1086,8 @@ impl SlideApp {
         self.session.active().and_then(|d| deckcraft_anim::show_order(&d.doc).first().copied()).unwrap_or(0)
     }
 
+    /// Start the slide show at slide `from` (in Reading View when `reading`), with presenter view
+    /// and its slide strip as the saved settings say.
     pub fn start_show(&mut self, from: usize, reading: bool) {
         self.anim_preview = None;
         self.media.stop_owned(media::Owner::Editor);

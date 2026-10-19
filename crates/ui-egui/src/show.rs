@@ -179,6 +179,8 @@ struct Transition {
 }
 
 impl Show {
+    /// A show of `doc` starting at slide `from`, in Reading View when `reading`, with presenter
+    /// view when `presenter`. Its slide strip starts on; the app sets it from the saved setting.
     pub fn new(doc: &Presentation, from: usize, reading: bool, presenter: bool) -> Self {
         Show {
             state: ShowState::start_at(doc, from),
@@ -548,6 +550,8 @@ fn keyboard(ctx: &egui::Context, show: &mut Show, doc: &Presentation, now: f64) 
     keep
 }
 
+/// One frame of the running show: the audience window, its input and media, and presenter view.
+/// Ends the show (and goes to its last slide in the editor) when it is left.
 pub fn ui(app: &mut SlideApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let Some((doc_uid, doc)) = app.session.active().map(|d| (d.uid, d.doc.clone())) else {
@@ -1438,6 +1442,8 @@ impl Show {
         }
     }
 
+    /// The show's state for the control channel: slide and step, overlays, the presenter timer,
+    /// and where the See All Slides grid and the presenter slide strip put each slide.
     pub fn showing_value(&self, n_slides: usize, aspect: f32, full: Rect, now: f64) -> serde_json::Value {
         let mut v = json!({
             "slide": self.state.slide,
@@ -1772,6 +1778,8 @@ fn render_thumb(ctx: &egui::Context, show: &mut Show, doc: &Presentation, i: usi
     Some(tex)
 }
 
+/// Presenter view in its own window: timer, clock and show controls, the current slide, the Next
+/// preview, the notes and the slide strip. Clears `keep` when the show should end.
 fn presenter_window(ctx: &egui::Context, show: &mut Show, doc: &Presentation, now: f64, keep: &mut bool) {
     let cur = show.state.slide;
     let next = show.state.peek_next(doc);
@@ -2048,6 +2056,8 @@ fn presenter_strip(ui: &mut Ui, show: &mut Show, doc: &Presentation, band: Rect,
         painter.text(pos2(rect.min.x + 2.0, rect.max.y + 4.0), Align2::LEFT_TOP, label, theme::font(12.0), color);
         // The slide already showing is left as it is, unless the show is at its end screen.
         if hit.clicked() && (!current || show.ended) {
+            // As a pick in See All Slides: the grid closes so the audience sees the slide.
+            show.grid = false;
             show.blank = None;
             show.zoom = None;
             show.zoom_arm = false;
@@ -2522,6 +2532,8 @@ mod tests {
         assert_eq!(st.slide, 0, "five Backs leave slide 2 (step {}, playing {})", st.step, st.playing);
     }
 
+    /// Wide, narrow, very tall, very wide and NaN slide shapes: the strip always fits the previous
+    /// slide, the current one and five more inside its band, numbers above the scrollbar.
     #[test]
     fn the_slide_strip_fits_the_previous_and_current_slides_and_five_ahead() {
         for (w, aspect) in [(1068.0, 16.0 / 9.0), (500.0, 16.0 / 9.0), (1068.0, 72.0 / 4032.0), (1068.0, 20.0), (1068.0, f32::NAN)] {
@@ -2553,6 +2565,8 @@ mod tests {
         assert!(none.width().is_finite() && none.height().is_finite());
     }
 
+    /// The strip lines up on the previous slide, and its scrollbar maps both ends of the track to
+    /// both ends of the deck, round-trips through the thumb and ignores NaN.
     #[test]
     fn the_strip_scrollbar_reaches_both_ends_of_the_deck() {
         assert_eq!(strip_first_for(0, 20, 7), 0);
@@ -2572,6 +2586,7 @@ mod tests {
         assert_eq!(strip_thumb_rect(track, 3, 3, 0), track);
     }
 
+    /// Presenter view alone (no audience window) on a deck of `slides` blank slides, from the first.
     fn presenter_harness(slides: usize) -> egui_kittest::Harness<'static, (std::sync::Arc<Presentation>, Show, bool)> {
         let mut session = deckcraft_engine::Session::with_new();
         for _ in 1..slides {
@@ -2588,6 +2603,7 @@ mod tests {
         )
     }
 
+    /// A real primary click at `p`: move, press, release, then let the presenter act on it.
     fn click_at(h: &mut egui_kittest::Harness<'static, (std::sync::Arc<Presentation>, Show, bool)>, p: Pos2) {
         h.event(egui::Event::PointerMoved(p));
         h.run_steps(1);
@@ -2598,10 +2614,13 @@ mod tests {
         h.run_steps(2);
     }
 
+    /// Centre of slide `slide`'s thumbnail as the strip last drew it.
     fn strip_cell(show: &Show, slide: usize) -> Pos2 {
         show.strip_cells.iter().find(|(i, _)| *i == slide).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("slide {slide} is not in the strip"))
     }
 
+    /// Clicks on a thumbnail and on the scrollbar in a 16-slide deck: the show goes to the clicked
+    /// slide, scrolling leaves the show where it is, and the strip follows the show again after.
     #[test]
     fn the_presenter_strip_goes_to_a_clicked_slide_and_scrolls_through_the_deck() {
         let mut h = presenter_harness(16);
@@ -2634,6 +2653,7 @@ mod tests {
         assert_eq!(h.state().1.strip_cells.first().map(|c| c.0), Some(0), "the strip follows the show again");
     }
 
+    /// The Slide strip button in presenter view hides the strip and brings it back.
     #[test]
     fn the_presenter_strip_can_be_turned_off_and_back_on() {
         use egui_kittest::kittest::Queryable;
@@ -2650,6 +2670,22 @@ mod tests {
         assert!(!h.state().1.strip_cells.is_empty());
     }
 
+    /// A strip thumbnail clicked while See All Slides covers the show closes the grid, as a pick in
+    /// the grid does, so the audience sees the slide the presenter chose.
+    #[test]
+    fn a_strip_click_closes_see_all_slides() {
+        let mut h = presenter_harness(6);
+        h.run_steps(4);
+        h.state_mut().1.grid = true;
+        h.run_steps(2);
+        let p = strip_cell(&h.state().1, 4);
+        click_at(&mut h, p);
+        assert_eq!(h.state().1.state.slide, 4);
+        assert!(!h.state().1.grid, "the grid no longer covers the slide");
+    }
+
+    /// `show.presenterStrip` sets and toggles the strip, new shows start with the saved setting,
+    /// and a running show follows it.
     #[test]
     fn the_strip_setting_is_a_command_and_outlasts_the_show() {
         let mut session = deckcraft_engine::Session::with_new();
