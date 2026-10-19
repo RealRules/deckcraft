@@ -61,6 +61,8 @@ pub struct Show {
     /// Where the strip drew each slide last frame, in presenter-window points.
     strip_cells: Vec<(usize, Rect)>,
     strip_track: Option<Rect>,
+    /// While the strip's scrollbar is held: where the pointer holds the thumb, from its left edge.
+    strip_grab: Option<f32>,
     timings: Vec<(usize, f64)>,
     last_move: f64,
     /// The last trackpad flick or mouse-wheel notch, so one gesture turns one page.
@@ -217,6 +219,7 @@ impl Show {
             strip_thumbs: vec![],
             strip_cells: vec![],
             strip_track: None,
+            strip_grab: None,
             timings: vec![],
             last_move: 0.0,
             last_swipe: f64::NEG_INFINITY,
@@ -2003,6 +2006,17 @@ fn strip_first_at(track: Rect, n: usize, visible: usize, x: f32) -> usize {
     ((t * span as f32).round() as usize).min(span)
 }
 
+/// The strip's first slide while the scrollbar is held at `x`. A press on the thumb keeps the spot
+/// it took hold of under the pointer, so the strip does not jump before the pointer moves; a
+/// press elsewhere on the track brings the thumb's centre there. `grab` remembers the spot until
+/// the button is let go (the caller clears it).
+fn strip_drag_first(track: Rect, n: usize, visible: usize, first: usize, grab: &mut Option<f32>, x: f32) -> usize {
+    let thumb = strip_thumb_rect(track, n, visible, first);
+    let w = thumb.width();
+    let at = *grab.get_or_insert_with(|| if thumb.x_range().contains(x) { x - thumb.min.x } else { w / 2.0 });
+    strip_first_at(track, n, visible, x - at + w / 2.0)
+}
+
 /// Presenter view's slide strip in `band`: the previous slide and the ones coming up, the current
 /// one outlined in the accent colour. A click goes to that slide; the scrollbar below moves the
 /// strip through the whole deck, and the strip lines up again when the show moves on.
@@ -2021,10 +2035,9 @@ fn presenter_strip(ui: &mut Ui, show: &mut Show, doc: &Presentation, band: Rect,
         show.strip_for = Some(cur);
     }
     let bar = ui.interact(track, ui.id().with("presenter_strip_bar"), Sense::click_and_drag());
-    if bar.is_pointer_button_down_on()
-        && let Some(p) = bar.interact_pointer_pos()
-    {
-        show.strip_first = strip_first_at(track, n, visible, p.x);
+    match bar.interact_pointer_pos().filter(|_| bar.is_pointer_button_down_on()) {
+        Some(p) => show.strip_first = strip_drag_first(track, n, visible, show.strip_first, &mut show.strip_grab, p.x),
+        None => show.strip_grab = None,
     }
     show.strip_first = show.strip_first.min(n.saturating_sub(visible));
     let painter = ui.painter().clone();
@@ -2584,6 +2597,45 @@ mod tests {
             assert_eq!(strip_first_at(track, 20, 7, t.center().x), first, "pressing the thumb's centre keeps it where it is");
         }
         assert_eq!(strip_thumb_rect(track, 3, 3, 0), track);
+    }
+
+    /// Pressing the scrollbar thumb away from its centre made the strip jump before any drag (PR
+    /// review). A press on the thumb leaves it where it is, a drag moves it by the pointer's
+    /// travel, and a press on the track off the thumb still brings the thumb there.
+    #[test]
+    fn grabbing_the_strip_thumb_off_centre_does_not_move_it() {
+        let track = Rect::from_min_size(pos2(10.0, 0.0), vec2(500.0, 12.0));
+        let (n, visible) = (20, 7);
+        for first in [0, 6, 13] {
+            let thumb = strip_thumb_rect(track, n, visible, first);
+            for x in [thumb.min.x + 1.0, thumb.center().x, thumb.max.x - 1.0] {
+                let mut grab = None;
+                assert_eq!(strip_drag_first(track, n, visible, first, &mut grab, x), first, "press at {x} on the thumb at {first}");
+            }
+        }
+        let thumb = strip_thumb_rect(track, n, visible, 0);
+        let step = (track.width() - thumb.width()) / 13.0;
+        let x0 = thumb.min.x + 2.0;
+        let mut grab = None;
+        assert_eq!(strip_drag_first(track, n, visible, 0, &mut grab, x0), 0);
+        assert_eq!(strip_drag_first(track, n, visible, 0, &mut grab, x0 + 5.0 * step), 5, "the thumb follows the pointer's travel");
+        assert_eq!(strip_drag_first(track, n, visible, 5, &mut grab, x0 + 100.0 * step), 13);
+        let mut grab = None;
+        assert_eq!(strip_drag_first(track, n, visible, 0, &mut grab, track.max.x - 1.0), 13, "a press off the thumb centres it there");
+    }
+
+    /// The same in presenter view: a click near the thumb's right edge leaves the strip as it was.
+    #[test]
+    fn a_press_on_the_strip_thumb_leaves_the_strip_alone() {
+        let mut h = presenter_harness(16);
+        h.run_steps(4);
+        let s = &h.state().1;
+        let (track, visible) = (s.strip_track.unwrap(), s.strip_cells.len());
+        let thumb = strip_thumb_rect(track, 16, visible, 0);
+        assert!(thumb.width() > 20.0, "the thumb is wide enough to press off its centre");
+        click_at(&mut h, pos2(thumb.max.x - 3.0, thumb.center().y));
+        assert_eq!(h.state().1.strip_cells.first().map(|c| c.0), Some(0), "the strip did not jump");
+        assert_eq!(h.state().1.strip_grab, None, "letting go ends the grab");
     }
 
     /// Presenter view alone (no audience window) on a deck of `slides` blank slides, from the first.
