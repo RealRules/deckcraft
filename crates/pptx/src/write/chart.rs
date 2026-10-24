@@ -750,11 +750,20 @@ pub fn write_kept(pkg: &mut crate::opc::PackageOut, chart_name: &str, c: &Chart,
         }
     }
     pkg.rels(chart_name, &rels);
+    let mut parts_by_norm = std::collections::HashMap::new();
+    for p in &c.kept.parts {
+        parts_by_norm.entry(norm(&p.name)).or_insert(p);
+    }
+    let mut seen_payloads = std::collections::HashSet::new();
     // The kept parts' own relationships, pointed at the new names.
     for p in c.kept.parts.iter().filter(|p| kept_payload(&p.name)) {
-        let Some(new_source) = names.get(&norm(&p.name)) else { continue };
+        let norm_name = norm(&p.name);
+        if !seen_payloads.insert(norm_name.clone()) {
+            continue;
+        }
+        let Some(new_source) = names.get(&norm_name) else { continue };
         let rp = norm(&rels_path(&p.name));
-        let Some(rels_part) = c.kept.parts.iter().find(|q| norm(&q.name) == rp) else { continue };
+        let Some(rels_part) = parts_by_norm.get(&rp) else { continue };
         let mut out = RelsOut::default();
         for r in crate::opc::rels_from_bytes(&rels_part.bytes, &p.name).items {
             if r.external {
